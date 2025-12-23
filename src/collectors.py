@@ -2,6 +2,7 @@
 import os
 import subprocess
 import shutil
+import shlex
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
@@ -46,6 +47,20 @@ class Collector:
             True si rsync est disponible.
         """
         return shutil.which("rsync") is not None
+
+    def _build_ssh_base_cmd(self) -> List[str]:
+        """
+        Construit la base de commande SSH, en tenant compte éventuellement
+        d'un mot de passe fourni via SSH_PASSWORD (sshpass).
+
+        Returns:
+            Liste de base pour exécuter ssh/sshpass.
+        """
+        ssh_password = os.getenv("SSH_PASSWORD")
+        base_cmd: List[str] = []
+        if ssh_password:
+            base_cmd = ["sshpass", "-p", ssh_password]
+        return base_cmd + ["ssh"]
     
     def _build_rsync_command(
         self,
@@ -280,24 +295,91 @@ class Collector:
     
     def collect_all_from_server(self, server: ServerConfig) -> List[Path]:
         """
-        Collecte tous les fichiers depuis un serveur.
-        
-        Note: Cette méthode suppose que remote_path contient un pattern.
-        En réalité, il faudrait lister les fichiers distants, ce qui nécessite
-        une connexion SSH. Pour l'instant, on suppose que la liste des fichiers
-        est fournie par un autre mécanisme.
+        Collecte tous les fichiers correspondant au pattern remote_path
+        depuis un serveur, en les listant d'abord via SSH.
         
         Args:
             server: Configuration du serveur.
         
         Returns:
-            Liste des fichiers collectés.
+            Liste des chemins locaux des fichiers collectés.
         """
-        # TODO: Implémenter la liste des fichiers distants via SSH
-        # Pour l'instant, cette méthode est un placeholder
-        logger.warning(
-            f"collect_all_from_server not fully implemented for {server.name}",
-            extra={"server": server.name, "operation": "copy"},
+        # Découper remote_path en répertoire + pattern
+        remote_path = server.remote_path
+        # Par défaut, si pas de wildcard, on considère que c'est un chemin complet
+        base_dir = os.path.dirname(remote_path) or "."
+        pattern = os.path.basename(remote_path)
+
+        # Construire la commande distante pour lister les fichiers.
+        # On utilise `find base_dir -maxdepth 1 -type f -name pattern`
+        # pour supporter un pattern comme *.log.gz de façon sûre.
+        remote_find_cmd = (
+            f"find {shlex.quote(base_dir)} -maxdepth 1 -type f -name {shlex.quote(pattern)}"
         )
-        return []
+
+        ssh_cmd = self._build_ssh_base_cmd() + [
+            f"{server.user}@{server.host}",
+            remote_find_cmd,
+        ]
+
+        logger.debug(
+            f"Listing remote files with: {' '.join(ssh_cmd)}",
+            extra={"server": server.name, "operation": "list_remote"},
+        )
+
+        try:
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.config.rsync.timeout + 10,
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr or result.stdout or "Unknown ssh error"
+                logger.error(
+                    f"Failed to list remote files on {server.name}: {error_msg}",
+                    extra={"server": server.name, "operation": "list_remote"},
+                )
+                return []
+
+            remote_files = [
+                line.strip()
+                for line in result.stdout.splitlines()
+                if line.strip()
+            ]
+
+            if not remote_files:
+                logger.info(
+                    f"No remote files found for pattern {remote_path}",
+                    extra={"server": server.name, "operation": "list_remote"},
+                )
+                return []
+
+            logger.info(
+                f"Found {len(remote_files)} remote files on {server.name}",
+                extra={"server": server.name, "operation": "list_remote"},
+            )
+
+            collected: List[Path] = []
+            for remote_file in remote_files:
+                local = self.collect_file(server, remote_file)
+                if local:
+                    collected.append(local)
+
+            return collected
+
+        except subprocess.TimeoutExpired:
+            logger.error(
+                f"Timeout while listing remote files on {server.name}",
+                extra={"server": server.name, "operation": "list_remote"},
+            )
+            return []
+        except Exception as e:
+            logger.error(
+                f"Unexpected error while listing remote files on {server.name}: {e}",
+                extra={"server": server.name, "operation": "list_remote"},
+                exc_info=True,
+            )
+            return []
 

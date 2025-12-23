@@ -164,21 +164,51 @@ class Pipeline:
             f"Processing server {server.name}",
             extra={"server": server.name, "operation": "process_server"},
         )
-        
-        # TODO: Implémenter la liste des fichiers distants
-        # Pour l'instant, cette méthode est un placeholder
-        # Dans un cas réel, il faudrait:
-        # 1. Se connecter via SSH au serveur
-        # 2. Lister les fichiers correspondant au pattern remote_path
-        # 3. Traiter chaque fichier
-        
-        self.logger.warning(
-            f"List of remote files not implemented for {server.name}. "
-            "Please provide file list manually.",
-            extra={"server": server.name, "operation": "process_server"},
-        )
-        
-        return {"server": server.name, "processed": 0, "failed": 0, "skipped": False}
+
+        # Étape 1 : lister les fichiers distants via SSH en utilisant le pattern remote_path
+        collected_files = self.collector.collect_all_from_server(server)
+
+        processed = 0
+        failed = 0
+
+        # Étape 2 : extraire les fichiers collectés (ils sont maintenant dans incoming/)
+        for local_file in collected_files:
+            try:
+                self.logger.info(
+                    f"Extracting file {local_file.name} from collected set",
+                    extra={
+                        "server": server.name,
+                        "file": local_file.name,
+                        "operation": "extract",
+                    },
+                )
+
+                extracted_file = self.extractor.extract_file(local_file, server.name)
+
+                if extracted_file:
+                    if not self.config.extract.delete_source:
+                        self.extractor.move_to_processed(local_file, server.name)
+                    processed += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                self.logger.error(
+                    f"Error processing collected file {local_file.name} from {server.name}: {e}",
+                    extra={
+                        "server": server.name,
+                        "file": local_file.name,
+                        "operation": "process_server",
+                    },
+                    exc_info=True,
+                )
+                failed += 1
+
+        return {
+            "server": server.name,
+            "processed": processed,
+            "failed": failed,
+            "skipped": False,
+        }
     
     def process_incoming_files(self) -> dict:
         """
