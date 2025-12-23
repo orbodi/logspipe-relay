@@ -69,6 +69,7 @@ class Config:
     state_dir: Path
     log_dir: Path
     tmp_dir: Path
+    share_dir: Optional[Path] = None
     retry: RetryConfig = field(default_factory=RetryConfig)
     rsync: RsyncConfig = field(default_factory=RsyncConfig)
     extract: ExtractConfig = field(default_factory=ExtractConfig)
@@ -96,6 +97,10 @@ class Config:
                 (self.data_root / stage / server.name).mkdir(parents=True, exist_ok=True)
             for error_type in ["copy", "extract", "quarantine"]:
                 (self.data_root / "error" / error_type / server.name).mkdir(parents=True, exist_ok=True)
+
+        # Créer le répertoire de partage si configuré (un seul niveau, sans sous-dossiers par serveur)
+        if self.share_dir:
+            self.share_dir.mkdir(parents=True, exist_ok=True)
 
 
 def load_config(config_dir: Optional[Path] = None) -> Config:
@@ -131,6 +136,8 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
     state_dir = Path(os.getenv("STATE_DIR", "/opt/logpipe-relay/state"))
     log_dir = Path(os.getenv("LOG_DIR", "/opt/logpipe-relay/logs"))
     tmp_dir = Path(os.getenv("TMP_DIR", "/opt/logpipe-relay/tmp"))
+    share_dir_env = os.getenv("SHARE_DIR", "").strip()
+    share_dir = Path(share_dir_env) if share_dir_env else None
     
     # Configuration retry
     retry = RetryConfig(
@@ -223,6 +230,7 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
         state_dir=state_dir,
         log_dir=log_dir,
         tmp_dir=tmp_dir,
+        share_dir=share_dir,
         retry=retry,
         rsync=rsync,
         extract=extract,

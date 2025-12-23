@@ -124,9 +124,13 @@ class Pipeline:
                 )
                 return False
             
-            # Étape 3: Déplacer vers processed (si extraction OK et delete_source=False)
+            # Étape 3: Déplacer le .gz vers processed (si extraction OK et delete_source=False)
             if not self.config.extract.delete_source:
                 self.extractor.move_to_processed(collected_file, server.name)
+
+            # Étape 4: Déplacer le fichier extrait vers SHARE_DIR si configuré
+            if extracted_file:
+                self.extractor.move_extracted_to_share(extracted_file, server.name)
             
             self.logger.info(
                 f"File {filename} processed successfully",
@@ -188,6 +192,8 @@ class Pipeline:
                 if extracted_file:
                     if not self.config.extract.delete_source:
                         self.extractor.move_to_processed(local_file, server.name)
+                    # Déplacer le fichier extrait vers SHARE_DIR si configuré
+                    self.extractor.move_extracted_to_share(extracted_file, server.name)
                     processed += 1
                 else:
                     failed += 1
@@ -250,6 +256,8 @@ class Pipeline:
                     if extracted_file:
                         if not self.config.extract.delete_source:
                             self.extractor.move_to_processed(gz_file, server_config.name)
+                        # Déplacer le fichier extrait vers SHARE_DIR si configuré
+                        self.extractor.move_extracted_to_share(extracted_file, server_config.name)
                         stats["processed"] += 1
                     else:
                         stats["failed"] += 1

@@ -322,3 +322,42 @@ class Extractor:
         
         return processed_file
 
+    def move_extracted_to_share(self, extracted_file: Path, server: str) -> Path:
+        """
+        Déplace un fichier extrait vers le répertoire de partage (SHARE_DIR), si configuré.
+
+        Args:
+            extracted_file: Chemin du fichier extrait.
+            server: Nom du serveur source.
+
+        Returns:
+            Nouveau chemin du fichier (identique si SHARE_DIR n'est pas configuré).
+        """
+        # Si aucun répertoire de partage n'est configuré, ne rien faire
+        if not self.config.share_dir:
+            return extracted_file
+
+        # Tous les fichiers sont placés au même niveau dans SHARE_DIR,
+        # sans sous-dossiers par serveur.
+        share_dir = self.config.share_dir
+        share_dir.mkdir(parents=True, exist_ok=True)
+
+        dest_file = share_dir / extracted_file.name
+
+        # Si un fichier existe déjà à cet emplacement, le remplacer
+        if dest_file.exists():
+            dest_file.unlink()
+
+        extracted_file.rename(dest_file)
+
+        logger.info(
+            f"File moved to share_dir: {dest_file}",
+            extra={
+                "server": server,
+                "file": dest_file.name,
+                "operation": "share",
+            },
+        )
+
+        return dest_file
+
