@@ -162,6 +162,27 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
         backup_count=int(os.getenv("LOG_BACKUP_COUNT", "5")),
     )
     
+    def _load_json_allow_comments(path: Path) -> dict:
+        """
+        Charge un fichier JSON en ignorant les lignes de commentaires (commençant par #).
+
+        Cela permet d'utiliser des fichiers .conf avec des commentaires en tête.
+        """
+        try:
+            with open(path, "r") as f:
+                lines = []
+                for line in f:
+                    stripped = line.lstrip()
+                    if stripped.startswith("#") or stripped == "":
+                        continue
+                    lines.append(line)
+            content = "".join(lines).strip()
+            if not content:
+                return {}
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in config file {path}: {e}") from e
+
     # Charger configuration pipeline
     pipeline_config = {}
     pipeline_file = config_dir / "pipeline.conf"
@@ -169,8 +190,7 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
         pipeline_file = config_dir / "pipeline.conf.example"
     
     if pipeline_file.exists():
-        with open(pipeline_file, "r") as f:
-            pipeline_config = json.load(f)
+        pipeline_config = _load_json_allow_comments(pipeline_file)
     
     pipeline = PipelineConfig(
         parallel_workers=pipeline_config.get("parallel_workers", 2),
@@ -188,16 +208,15 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
         sources_file = config_dir / "sources.conf.example"
     
     if sources_file.exists():
-        with open(sources_file, "r") as f:
-            sources_data = json.load(f)
-            for server_data in sources_data.get("servers", []):
-                servers.append(ServerConfig(
-                    name=server_data["name"],
-                    host=server_data["host"],
-                    user=server_data["user"],
-                    remote_path=server_data["remote_path"],
-                    enabled=server_data.get("enabled", True),
-                ))
+        sources_data = _load_json_allow_comments(sources_file)
+        for server_data in sources_data.get("servers", []):
+            servers.append(ServerConfig(
+                name=server_data["name"],
+                host=server_data["host"],
+                user=server_data["user"],
+                remote_path=server_data["remote_path"],
+                enabled=server_data.get("enabled", True),
+            ))
     
     config = Config(
         data_root=data_root,
