@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""
+Script de collecte de fichiers depuis les serveurs sources.
+Usage: collect [--config-dir CONFIG_DIR] [SERVER_NAME] [REMOTE_PATH]
+"""
+import sys
+import argparse
+from pathlib import Path
+
+# Ajouter le répertoire src au PYTHONPATH
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root / "src"))
+
+from src.config import load_config
+from src.collectors import Collector
+from src.state import StateManager
+from src.logger import setup_logger
+
+
+def main():
+    """Point d'entrée pour la collecte."""
+    parser = argparse.ArgumentParser(
+        description="Collecte des fichiers depuis les serveurs sources"
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="Répertoire contenant les fichiers de configuration",
+    )
+    parser.add_argument(
+        "server_name",
+        nargs="?",
+        help="Nom du serveur source (optionnel si un seul serveur)",
+    )
+    parser.add_argument(
+        "remote_path",
+        nargs="?",
+        help="Chemin distant du fichier à collecter",
+    )
+    
+    args = parser.parse_args()
+    
+    try:
+        # Charger la configuration
+        config = load_config(args.config_dir)
+        
+        # Configurer le logger
+        logger = setup_logger(config.log, config.log_dir)
+        
+        # Créer le collecteur
+        state_manager = StateManager(config.state_dir)
+        collector = Collector(config, state_manager)
+        
+        # Si server_name et remote_path sont fournis, collecter un fichier spécifique
+        if args.server_name and args.remote_path:
+            # Trouver le serveur
+            server_config = None
+            for server in config.servers:
+                if server.name == args.server_name:
+                    server_config = server
+                    break
+            
+            if not server_config:
+                print(f"Error: Server '{args.server_name}' not found in configuration", file=sys.stderr)
+                return 1
+            
+            if not server_config.enabled:
+                print(f"Error: Server '{args.server_name}' is disabled", file=sys.stderr)
+                return 1
+            
+            # Collecter le fichier
+            result = collector.collect_file(server_config, args.remote_path)
+            
+            if result:
+                print(f"File collected successfully: {result}")
+                return 0
+            else:
+                print(f"Failed to collect file: {args.remote_path}", file=sys.stderr)
+                return 1
+        else:
+            print("Usage: collect SERVER_NAME REMOTE_PATH", file=sys.stderr)
+            print("\nAvailable servers:", file=sys.stderr)
+            for server in config.servers:
+                status = "enabled" if server.enabled else "disabled"
+                print(f"  - {server.name} ({server.host}) [{status}]", file=sys.stderr)
+            return 1
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+

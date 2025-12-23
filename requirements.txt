@@ -1,0 +1,7 @@
+# LOGPIPE-RELAY dependencies
+python-dotenv>=1.0.0
+
+# Note: Pour production, considérer d'ajouter:
+# - pydantic>=2.0.0  # Pour validation de configuration plus robuste
+# - typing-extensions>=4.0.0  # Pour meilleur support des types
+

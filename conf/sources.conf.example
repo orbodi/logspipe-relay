@@ -1,0 +1,30 @@
+# Configuration des serveurs sources
+# Format: YAML ou JSON (actuellement JSON)
+# Chaque serveur doit avoir: name, host, user, remote_path
+
+{
+  "servers": [
+    {
+      "name": "srv1",
+      "host": "srv1.example.com",
+      "user": "loguser",
+      "remote_path": "/var/log/apps/*.gz",
+      "enabled": true
+    },
+    {
+      "name": "srv2",
+      "host": "srv2.example.com",
+      "user": "loguser",
+      "remote_path": "/var/log/apps/*.gz",
+      "enabled": true
+    },
+    {
+      "name": "srv3",
+      "host": "srv3.example.com",
+      "user": "loguser",
+      "remote_path": "/var/log/apps/*.gz",
+      "enabled": false
+    }
+  ]
+}
+

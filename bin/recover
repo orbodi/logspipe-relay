@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""
+Script de récupération pour retry intelligent des fichiers en erreur.
+Usage: recover [--config-dir CONFIG_DIR] [--error-type TYPE] [--server SERVER]
+"""
+import sys
+import argparse
+from pathlib import Path
+
+# Ajouter le répertoire src au PYTHONPATH
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root / "src"))
+
+from src.config import load_config
+from src.collectors import Collector
+from src.extractor import Extractor
+from src.state import StateManager, FileState
+from src.logger import setup_logger
+
+
+def main():
+    """Point d'entrée pour la récupération."""
+    parser = argparse.ArgumentParser(
+        description="Récupération et retry des fichiers en erreur"
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="Répertoire contenant les fichiers de configuration",
+    )
+    parser.add_argument(
+        "--error-type",
+        choices=["copy", "extract", "quarantine"],
+        help="Type d'erreur à récupérer (tous si non spécifié)",
+    )
+    parser.add_argument(
+        "--server",
+        help="Nom du serveur (tous si non spécifié)",
+    )
+    
+    args = parser.parse_args()
+    
+    try:
+        # Charger la configuration
+        config = load_config(args.config_dir)
+        
+        # Configurer le logger
+        logger = setup_logger(config.log, config.log_dir)
+        
+        # Créer les composants
+        state_manager = StateManager(config.state_dir)
+        collector = Collector(config, state_manager)
+        extractor = Extractor(config, state_manager)
+        
+        error_types = [args.error_type] if args.error_type else ["copy", "extract", "quarantine"]
+        servers = [args.server] if args.server else [s.name for s in config.servers]
+        
+        recovered = 0
+        failed = 0
+        
+        for error_type in error_types:
+            error_dir = config.data_root / "error" / error_type
+            
+            for server_name in servers:
+                server_error_dir = error_dir / server_name
+                
+                if not server_error_dir.exists():
+                    continue
+                
+                # Parcourir les fichiers en erreur
+                for error_file in server_error_dir.glob("*.gz"):
+                    try:
+                        logger.info(
+                            f"Attempting to recover {error_file.name} from {error_type}",
+                            extra={
+                                "server": server_name,
+                                "file": error_file.name,
+                                "error_type": error_type,
+                                "operation": "recover",
+                            },
+                        )
+                        
+                        # Obtenir l'état du fichier
+                        state = state_manager.get_state(error_file.name, server_name)
+                        
+                        if error_type == "copy":
+                            # Pour copy, on ne peut pas récupérer automatiquement
+                            # car on n'a pas le chemin distant original
+                            logger.warning(
+                                f"Cannot automatically recover copy error for {error_file.name}. "
+                                "Please use collect command manually.",
+                                extra={
+                                    "server": server_name,
+                                    "file": error_file.name,
+                                    "operation": "recover",
+                                },
+                            )
+                            continue
+                        
+                        elif error_type == "extract":
+                            # Réessayer l'extraction
+                            extracted = extractor.extract_file(error_file, server_name)
+                            if extracted:
+                                recovered += 1
+                                logger.info(
+                                    f"Successfully recovered {error_file.name}",
+                                    extra={
+                                        "server": server_name,
+                                        "file": error_file.name,
+                                        "operation": "recover",
+                                    },
+                                )
+                            else:
+                                failed += 1
+                        
+                        elif error_type == "quarantine":
+                            # Fichiers corrompus: on ne peut pas les récupérer
+                            logger.warning(
+                                f"Cannot recover corrupted file {error_file.name} from quarantine",
+                                extra={
+                                    "server": server_name,
+                                    "file": error_file.name,
+                                    "operation": "recover",
+                                },
+                            )
+                        
+                    except Exception as e:
+                        failed += 1
+                        logger.error(
+                            f"Error recovering {error_file.name}: {e}",
+                            extra={
+                                "server": server_name,
+                                "file": error_file.name,
+                                "operation": "recover",
+                            },
+                            exc_info=True,
+                        )
+        
+        print(f"\nRecovery completed: {recovered} recovered, {failed} failed")
+        return 0 if failed == 0 else 1
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+

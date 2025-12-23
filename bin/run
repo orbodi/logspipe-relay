@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""
+Orchestrateur principal du pipeline LOGPIPE-RELAY.
+Usage: run [--config-dir CONFIG_DIR] [--no-incoming] [--sequential]
+"""
+import sys
+import argparse
+from pathlib import Path
+
+# Ajouter le répertoire src au PYTHONPATH
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root / "src"))
+
+from src.config import load_config
+from src.pipeline import Pipeline
+
+
+def main():
+    """Point d'entrée principal."""
+    parser = argparse.ArgumentParser(
+        description="LOGPIPE-RELAY: Pipeline de collecte et d'extraction de logs"
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="Répertoire contenant les fichiers de configuration (défaut: conf/)",
+    )
+    parser.add_argument(
+        "--no-incoming",
+        action="store_true",
+        help="Ne pas traiter les fichiers déjà dans incoming/",
+    )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Traiter les serveurs séquentiellement au lieu de parallèlement",
+    )
+    
+    args = parser.parse_args()
+    
+    try:
+        # Charger la configuration
+        config = load_config(args.config_dir)
+        
+        # Créer et exécuter le pipeline
+        pipeline = Pipeline(config)
+        stats = pipeline.run(
+            process_incoming=not args.no_incoming,
+            parallel=not args.sequential,
+        )
+        
+        # Afficher les statistiques
+        print("\n=== Pipeline Statistics ===")
+        print(f"Incoming files: {stats['incoming']['processed']} processed, {stats['incoming']['failed']} failed")
+        for server_name, server_stats in stats['servers'].items():
+            if server_stats.get('skipped'):
+                print(f"Server {server_name}: skipped (disabled)")
+            else:
+                processed = server_stats.get('processed', 0)
+                failed = server_stats.get('failed', 0)
+                print(f"Server {server_name}: {processed} processed, {failed} failed")
+        
+        return 0 if stats['incoming']['failed'] == 0 else 1
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
