@@ -7,9 +7,9 @@ import sys
 import argparse
 from pathlib import Path
 
-# Ajouter le répertoire src au PYTHONPATH
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root / "src"))
+# Ajouter la racine du projet au PYTHONPATH pour pouvoir importer le package src
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
 
 from src.config import load_config
 from src.collectors import Collector
