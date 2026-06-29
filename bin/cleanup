@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""
+Nettoyage des fichiers anciens selon la rétention configurée dans pipeline.conf.
+Usage: cleanup [--config-dir CONFIG_DIR]
+"""
+import sys
+import argparse
+from pathlib import Path
+
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.config import load_config
+from src.pipeline import Pipeline
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="LOGPIPE-RELAY: nettoyage des fichiers dépassant la rétention"
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="Répertoire contenant les fichiers de configuration (défaut: conf/)",
+    )
+    args = parser.parse_args()
+
+    try:
+        config = load_config(args.config_dir)
+        pipeline = Pipeline(config)
+        stats = pipeline.run_cleanup()
+
+        print("\n=== Cleanup Statistics ===")
+        age = stats.get("age") or {}
+        disk = stats.get("disk") or {}
+
+        total_deleted = 0
+        total_errors = 0
+
+        for target, target_stats in age.items():
+            deleted = target_stats.get("deleted", 0)
+            errors = target_stats.get("errors", 0)
+            skipped = target_stats.get("skipped", 0)
+            total_deleted += deleted
+            total_errors += errors
+            if skipped:
+                print(f"{target} (age): disabled")
+            else:
+                print(f"{target} (age): {deleted} deleted, {errors} errors")
+
+        if disk.get("skipped"):
+            print("disk: disabled")
+        elif disk.get("triggered"):
+            print(
+                f"disk: {disk.get('deleted', 0)} deleted, "
+                f"{disk.get('available_gb_before')} → {disk.get('available_gb_after')} GB free"
+            )
+        else:
+            print(f"disk: not needed ({disk.get('available_gb_after', '?')} GB free)")
+
+        total_deleted += disk.get("deleted", 0)
+        total_errors += disk.get("errors", 0)
+        print(f"\nTotal: {total_deleted} deleted, {total_errors} errors")
+        return 0 if total_errors == 0 else 1
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

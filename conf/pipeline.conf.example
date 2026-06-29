@@ -3,7 +3,11 @@
   "file_check_interval": 60,
   "cleanup_processed_after_days": 30,
   "cleanup_error_after_days": 90,
+  "cleanup_inputs_after_days": 0,
+  "cleanup_tmp_after_days": 7,
   "max_concurrent_extractions": 4,
-  "disk_space_threshold_gb": 10
+  "disk_space_threshold_gb": 10,
+  "disk_space_target_gb": 15,
+  "disk_cleanup_include_inputs": true
 }
 

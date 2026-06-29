@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from .config import Config
+from .config import Config, _ensure_dir
 from .retry import RetryableOperation
 from .state import StateManager
 from .logger import get_logger
@@ -324,38 +324,31 @@ class Extractor:
 
     def move_extracted_to_share(self, extracted_file: Path, server: str) -> Path:
         """
-        Déplace un fichier extrait vers le répertoire de partage (SHARE_DIR), si configuré.
+        Déplace un fichier extrait vers ROOT_DIR/inputs/.
 
         Args:
             extracted_file: Chemin du fichier extrait.
             server: Nom du serveur source.
 
         Returns:
-            Nouveau chemin du fichier (identique si SHARE_DIR n'est pas configuré).
+            Nouveau chemin du fichier dans inputs/.
         """
-        # Si aucun répertoire de partage n'est configuré, ne rien faire
-        if not self.config.share_dir:
-            return extracted_file
+        inputs_dir = self.config.inputs_dir
+        _ensure_dir(inputs_dir)
 
-        # Tous les fichiers sont placés au même niveau dans SHARE_DIR,
-        # sans sous-dossiers par serveur.
-        share_dir = self.config.share_dir
-        share_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = inputs_dir / extracted_file.name
 
-        dest_file = share_dir / extracted_file.name
-
-        # Si un fichier existe déjà à cet emplacement, le remplacer
         if dest_file.exists():
             dest_file.unlink()
 
         extracted_file.rename(dest_file)
 
         logger.info(
-            f"File moved to share_dir: {dest_file}",
+            f"File moved to inputs: {dest_file}",
             extra={
                 "server": server,
                 "file": dest_file.name,
-                "operation": "share",
+                "operation": "inputs",
             },
         )
 

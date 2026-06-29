@@ -2,9 +2,34 @@
 import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
+
+# Permissions par défaut des répertoires (rwxr-xr-x), appliquées sur Unix uniquement
+_DEFAULT_DIR_MODE = 0o755
+
+
+def _ensure_dir(path: Path, mode: int = _DEFAULT_DIR_MODE) -> None:
+    """Crée un répertoire (et ses parents) et applique les permissions si possible."""
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass
+
+
+def _layout_from_root(root_dir: Path) -> dict:
+    """Dérive l'arborescence standard à partir de ROOT_DIR."""
+    return {
+        "root_dir": root_dir,
+        "inputs_dir": root_dir / "inputs",
+        "data_root": root_dir / "data",
+        "state_dir": root_dir / "state",
+        "log_dir": root_dir / "logs",
+        "tmp_dir": root_dir / "tmp",
+    }
 
 
 @dataclass
@@ -58,49 +83,51 @@ class PipelineConfig:
     file_check_interval: int = 60
     cleanup_processed_after_days: int = 30
     cleanup_error_after_days: int = 90
+    cleanup_inputs_after_days: int = 0
+    cleanup_tmp_after_days: int = 7
     max_concurrent_extractions: int = 4
     disk_space_threshold_gb: int = 10
+    disk_space_target_gb: int = 0
+    disk_cleanup_include_inputs: bool = True
 
 
 @dataclass
 class Config:
     """Configuration principale du projet."""
+    root_dir: Path
+    inputs_dir: Path
     data_root: Path
     state_dir: Path
     log_dir: Path
     tmp_dir: Path
-    share_dir: Optional[Path] = None
     retry: RetryConfig = field(default_factory=RetryConfig)
     rsync: RsyncConfig = field(default_factory=RsyncConfig)
     extract: ExtractConfig = field(default_factory=ExtractConfig)
     log: LogConfig = field(default_factory=LogConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     servers: List[ServerConfig] = field(default_factory=list)
-    
+
+    @property
+    def share_dir(self) -> Path:
+        """Alias rétrocompatible : inputs_dir est la destination des fichiers extraits."""
+        return self.inputs_dir
+
     def __post_init__(self):
-        """Créer les répertoires nécessaires."""
-        self.data_root.mkdir(parents=True, exist_ok=True)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.tmp_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Créer les sous-répertoires de data
+        """Crée ROOT_DIR et toute l'arborescence nécessaire."""
+        for path in (self.root_dir, self.inputs_dir, self.data_root, self.state_dir, self.log_dir, self.tmp_dir):
+            _ensure_dir(path)
+
         for stage in ["incoming", "extracted", "processed", "error"]:
-            (self.data_root / stage).mkdir(parents=True, exist_ok=True)
+            _ensure_dir(self.data_root / stage)
             if stage == "error":
                 for error_type in ["copy", "extract", "quarantine"]:
-                    (self.data_root / stage / error_type).mkdir(parents=True, exist_ok=True)
-        
-        # Créer les répertoires par serveur
+                    _ensure_dir(self.data_root / stage / error_type)
+
         for server in self.servers:
             for stage in ["incoming", "extracted", "processed"]:
-                (self.data_root / stage / server.name).mkdir(parents=True, exist_ok=True)
+                _ensure_dir(self.data_root / stage / server.name)
             for error_type in ["copy", "extract", "quarantine"]:
-                (self.data_root / "error" / error_type / server.name).mkdir(parents=True, exist_ok=True)
-
-        # Créer le répertoire de partage si configuré (un seul niveau, sans sous-dossiers par serveur)
-        if self.share_dir:
-            self.share_dir.mkdir(parents=True, exist_ok=True)
+                _ensure_dir(self.data_root / "error" / error_type / server.name)
 
 
 def load_config(config_dir: Optional[Path] = None) -> Config:
@@ -131,13 +158,14 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
         if env_example.exists():
             load_dotenv(env_example)
     
-    # Lire les variables d'environnement avec valeurs par défaut
-    data_root = Path(os.getenv("DATA_ROOT", "/opt/logpipe-relay/data"))
-    state_dir = Path(os.getenv("STATE_DIR", "/opt/logpipe-relay/state"))
-    log_dir = Path(os.getenv("LOG_DIR", "/opt/logpipe-relay/logs"))
-    tmp_dir = Path(os.getenv("TMP_DIR", "/opt/logpipe-relay/tmp"))
-    share_dir_env = os.getenv("SHARE_DIR", "").strip()
-    share_dir = Path(share_dir_env) if share_dir_env else None
+    project_root = Path(__file__).parent.parent
+    default_root = project_root / "data"
+
+    root_dir_env = os.getenv("ROOT_DIR", "").strip()
+    if root_dir_env:
+        layout = _layout_from_root(Path(root_dir_env))
+    else:
+        layout = _layout_from_root(default_root)
     
     # Configuration retry
     retry = RetryConfig(
@@ -204,8 +232,12 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
         file_check_interval=pipeline_config.get("file_check_interval", 60),
         cleanup_processed_after_days=pipeline_config.get("cleanup_processed_after_days", 30),
         cleanup_error_after_days=pipeline_config.get("cleanup_error_after_days", 90),
+        cleanup_inputs_after_days=pipeline_config.get("cleanup_inputs_after_days", 0),
+        cleanup_tmp_after_days=pipeline_config.get("cleanup_tmp_after_days", 7),
         max_concurrent_extractions=pipeline_config.get("max_concurrent_extractions", 4),
         disk_space_threshold_gb=pipeline_config.get("disk_space_threshold_gb", 10),
+        disk_space_target_gb=pipeline_config.get("disk_space_target_gb", 0),
+        disk_cleanup_include_inputs=pipeline_config.get("disk_cleanup_include_inputs", True),
     )
     
     # Charger configuration serveurs
@@ -226,11 +258,7 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
             ))
     
     config = Config(
-        data_root=data_root,
-        state_dir=state_dir,
-        log_dir=log_dir,
-        tmp_dir=tmp_dir,
-        share_dir=share_dir,
+        **layout,
         retry=retry,
         rsync=rsync,
         extract=extract,

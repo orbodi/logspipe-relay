@@ -1,5 +1,4 @@
 """Orchestrateur principal du pipeline."""
-import os
 from pathlib import Path
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -8,6 +7,8 @@ from .config import Config, ServerConfig
 from .collectors import Collector
 from .extractor import Extractor
 from .state import StateManager
+from .cleanup import CleanupManager
+from .disk import get_available_gb
 from .logger import setup_logger, get_logger
 
 
@@ -34,39 +35,19 @@ class Pipeline:
         self.logger.info("Pipeline initialized", extra={"operation": "init"})
     
     def _check_disk_space(self) -> bool:
-        """
-        Vérifie l'espace disque disponible.
-        
-        Returns:
-            True si assez d'espace disponible.
-        """
+        """Vérifie que l'espace libre est au-dessus du seuil configuré."""
         try:
-            stat = os.statvfs(self.config.data_root)
-            available_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
-            
-            if available_gb < self.config.pipeline.disk_space_threshold_gb:
+            available_gb = get_available_gb(self.config.root_dir)
+            threshold = self.config.pipeline.disk_space_threshold_gb
+
+            if threshold > 0 and available_gb < threshold:
                 self.logger.warning(
                     f"Low disk space: {available_gb:.2f} GB available "
-                    f"(threshold: {self.config.pipeline.disk_space_threshold_gb} GB)",
+                    f"(threshold: {threshold} GB)",
                     extra={"operation": "disk_check"},
                 )
                 return False
-            
-            return True
-        except AttributeError:
-            # Windows n'a pas statvfs, utiliser shutil.disk_usage
-            import shutil
-            total, used, free = shutil.disk_usage(self.config.data_root)
-            available_gb = free / (1024 ** 3)
-            
-            if available_gb < self.config.pipeline.disk_space_threshold_gb:
-                self.logger.warning(
-                    f"Low disk space: {available_gb:.2f} GB available "
-                    f"(threshold: {self.config.pipeline.disk_space_threshold_gb} GB)",
-                    extra={"operation": "disk_check"},
-                )
-                return False
-            
+
             return True
         except Exception as e:
             self.logger.error(
@@ -74,7 +55,7 @@ class Pipeline:
                 extra={"operation": "disk_check"},
                 exc_info=True,
             )
-            return True  # Continuer en cas d'erreur de vérification
+            return True
     
     def process_file_from_server(
         self,
@@ -128,7 +109,7 @@ class Pipeline:
             if not self.config.extract.delete_source:
                 self.extractor.move_to_processed(collected_file, server.name)
 
-            # Étape 4: Déplacer le fichier extrait vers SHARE_DIR si configuré
+            # Déplacer le fichier extrait vers ROOT_DIR/inputs/
             if extracted_file:
                 self.extractor.move_extracted_to_share(extracted_file, server.name)
             
@@ -192,7 +173,7 @@ class Pipeline:
                 if extracted_file:
                     if not self.config.extract.delete_source:
                         self.extractor.move_to_processed(local_file, server.name)
-                    # Déplacer le fichier extrait vers SHARE_DIR si configuré
+                    # Déplacer le fichier extrait vers ROOT_DIR/inputs/
                     self.extractor.move_extracted_to_share(extracted_file, server.name)
                     processed += 1
                 else:
@@ -256,7 +237,7 @@ class Pipeline:
                     if extracted_file:
                         if not self.config.extract.delete_source:
                             self.extractor.move_to_processed(gz_file, server_config.name)
-                        # Déplacer le fichier extrait vers SHARE_DIR si configuré
+                        # Déplacer le fichier extrait vers ROOT_DIR/inputs/
                         self.extractor.move_extracted_to_share(extracted_file, server_config.name)
                         stats["processed"] += 1
                     else:
@@ -280,32 +261,51 @@ class Pipeline:
         )
         
         return stats
-    
-    def run(self, process_incoming: bool = True, parallel: bool = True) -> dict:
+
+    def run_cleanup(self) -> dict:
+        """Supprime les fichiers plus anciens que la rétention configurée."""
+        self.logger.info("Starting cleanup", extra={"operation": "cleanup"})
+        cleanup = CleanupManager(self.config, self.state_manager)
+        return cleanup.run()
+
+    def run(self, process_incoming: bool = True, parallel: bool = True, run_cleanup: bool = True) -> dict:
         """
         Exécute le pipeline complet.
         
         Args:
             process_incoming: Si True, traite les fichiers déjà dans incoming/.
             parallel: Si True, traite les serveurs en parallèle.
+            run_cleanup: Si True, supprime les fichiers dépassant la rétention.
         
         Returns:
             Dictionnaire avec statistiques globales.
         """
         self.logger.info("Starting pipeline execution", extra={"operation": "run"})
-        
-        # Vérifier l'espace disque
+
+        overall_stats = {
+            "servers": {},
+            "incoming": {"processed": 0, "failed": 0},
+            "cleanup": {},
+            "cleanup_pre": {},
+        }
+
+        if run_cleanup:
+            pre_cleanup = CleanupManager(self.config, self.state_manager).run_disk_cleanup()
+            overall_stats["cleanup_pre"] = pre_cleanup
+            if pre_cleanup.get("triggered"):
+                self.logger.info(
+                    f"Pre-run disk cleanup: {pre_cleanup.get('deleted', 0)} file(s) deleted, "
+                    f"{pre_cleanup.get('available_gb_before')} → "
+                    f"{pre_cleanup.get('available_gb_after')} GB free",
+                    extra={"operation": "run", "cleanup_pre": pre_cleanup},
+                )
+
         if not self._check_disk_space():
             self.logger.warning(
                 "Low disk space detected, but continuing",
                 extra={"operation": "run"},
             )
-        
-        overall_stats = {
-            "servers": {},
-            "incoming": {"processed": 0, "failed": 0},
-        }
-        
+
         # Traiter les fichiers incoming si demandé
         if process_incoming:
             overall_stats["incoming"] = self.process_incoming_files()
@@ -352,7 +352,10 @@ class Pipeline:
                         "failed": 0,
                         "error": str(e),
                     }
-        
+
+        if run_cleanup:
+            overall_stats["cleanup"] = self.run_cleanup()
+
         self.logger.info(
             "Pipeline execution completed",
             extra={"operation": "run", "stats": overall_stats},

@@ -25,22 +25,27 @@ cd conf
 cp env.example .env
 ```
 
-2. **Éditer `.env`** avec vos chemins (sur Linux) :
+2. **Éditer `.env`** avec votre répertoire racine :
 
 ```env
-DATA_ROOT=/opt/logpipe-relay/data
-STATE_DIR=/opt/logpipe-relay/state
-LOG_DIR=/opt/logpipe-relay/logs
-TMP_DIR=/opt/logpipe-relay/tmp
+ROOT_DIR=/opt/logpipe-relay
 ```
 
-Ou sur Windows :
+Sur Windows :
 
 ```env
-DATA_ROOT=D:\logpipe-relay\data
-STATE_DIR=D:\logpipe-relay\state
-LOG_DIR=D:\logpipe-relay\logs
-TMP_DIR=D:\logpipe-relay\tmp
+ROOT_DIR=D:\logpipe-relay
+```
+
+Au démarrage, le pipeline crée automatiquement :
+
+```
+ROOT_DIR/
+├── inputs/     ← fichiers .log extraits
+├── data/       ← incoming, extracted, processed, error
+├── state/
+├── logs/
+└── tmp/
 ```
 
 3. **Configurer vos serveurs** :

@@ -4,40 +4,43 @@ Pipeline de collecte et d'extraction de logs compressés multi-serveurs.
 
 ## Description
 
-LOGPIPE-RELAY est un pipeline robuste pour collecter des fichiers de logs compressés (`.gz`) depuis plusieurs serveurs vers un serveur central, les extraire, et les organiser dans une structure claire. Le pipeline inclut :
+LOGPIPE-RELAY collecte des fichiers de logs compressés (`.gz`) depuis plusieurs serveurs vers un serveur central, les extrait et les dépose dans un répertoire `inputs/` prêt pour l'ingestion downstream (ex. `middleware-abis-logs-ingestor`).
 
-- **Collecte avec retry automatique** : Utilise `rsync` pour copier les fichiers avec retry configurable
-- **Extraction avec validation** : Extrait les fichiers gzip avec validation d'intégrité
-- **Gestion d'erreurs complète** : Catégorise les erreurs (copy, extract, corruption) et les déplace vers des répertoires appropriés
-- **Idempotence** : Utilise des checksums et un système d'état pour éviter les doublons
-- **Configuration flexible** : Tout est configurable via fichiers `.env` et `.conf`
-- **Logging structuré** : Logs JSON pour faciliter l'analyse
+Fonctionnalités principales :
+
+- **Collecte avec retry** : `rsync` + SSH, backoff exponentiel configurable
+- **Extraction gzip** : validation d'intégrité, gestion des fichiers corrompus
+- **Idempotence** : checksums SHA256 et fichiers d'état par fichier
+- **Configuration simple** : un seul `ROOT_DIR`, arborescence créée automatiquement
+- **Nettoyage automatique** : par âge (rétention) et par espace disque disponible
+- **Logging structuré** : logs JSON avec rotation
 
 ## Structure du projet
 
 ```
 logspipe-relay/
-├── src/                    # Code source Python
-│   ├── __init__.py
-│   ├── config.py          # Gestion configuration
-│   ├── logger.py          # Configuration logging
-│   ├── retry.py           # Mécanisme retry
-│   ├── state.py           # Gestion état/idempotence
-│   ├── collectors.py      # Collecte via rsync
-│   ├── extractor.py       # Extraction gzip
-│   └── pipeline.py        # Orchestrateur principal
-├── bin/                   # Scripts exécutables
-│   ├── run                # Orchestrateur principal
+├── src/
+│   ├── config.py          # Configuration (ROOT_DIR, dérivation des chemins)
+│   ├── pipeline.py        # Orchestrateur principal
+│   ├── collectors.py      # Collecte rsync / SSH
+│   ├── extractor.py       # Extraction gzip → inputs/
+│   ├── cleanup.py         # Nettoyage par âge et par disque
+│   ├── disk.py            # Mesure de l'espace disque
+│   ├── state.py           # État / idempotence
+│   ├── retry.py           # Retry avec backoff
+│   └── logger.py          # Logging JSON
+├── bin/
+│   ├── run                # Pipeline complet
+│   ├── cleanup            # Nettoyage seul
 │   ├── collect            # Collecte manuelle
 │   ├── extract            # Extraction manuelle
 │   └── recover            # Récupération fichiers en erreur
-├── conf/                  # Configuration
-│   ├── .env.example       # Variables d'environnement
-│   ├── sources.conf.example    # Configuration serveurs
-│   └── pipeline.conf.example   # Configuration pipeline
+├── conf/
+│   ├── env.example        # Variables d'environnement
+│   ├── sources.conf.example
+│   └── pipeline.conf.example
 ├── requirements.txt
-├── setup.py
-└── README.md
+└── setup.py
 ```
 
 ## Installation
@@ -45,157 +48,174 @@ logspipe-relay/
 ### Prérequis
 
 - Python 3.7+
-- `rsync` installé sur le système
-- Accès SSH configuré vers les serveurs sources
-
-### Installation du package
+- `rsync` et `ssh` disponibles sur le système
+- Accès SSH (de préférence par clés) vers les serveurs sources
 
 ```bash
-# Cloner le repository (ou télécharger les fichiers)
 cd logspipe-relay
-
-# Créer un environnement virtuel (recommandé)
-python3 -m venv venv
-source venv/bin/activate  # Sur Windows: venv\Scripts\activate
-
-# Installer les dépendances
+python -m venv venv
+source venv/bin/activate   # Windows : venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ### Configuration
 
-1. **Copier les fichiers de configuration exemple** :
-
 ```bash
 cd conf
-cp .env.example .env
+cp env.example .env
 cp sources.conf.example sources.conf
 cp pipeline.conf.example pipeline.conf
 ```
 
-2. **Configurer `.env`** :
+#### `.env` — une seule variable de chemin
 
-Éditez `conf/.env` et ajustez les chemins et paramètres :
+Seul `ROOT_DIR` est requis. Tous les sous-dossiers sont **créés automatiquement** au démarrage (permissions `755` sur Linux) :
 
 ```env
-DATA_ROOT=/opt/logpipe-relay/data
-STATE_DIR=/opt/logpipe-relay/state
-LOG_DIR=/opt/logpipe-relay/logs
-TMP_DIR=/opt/logpipe-relay/tmp
-MAX_RETRY_COPY=3
-MAX_RETRY_EXTRACT=3
-RETRY_DELAY_BASE=60
+# Linux
+ROOT_DIR=/opt/logpipe-relay
+
+# Windows
+# ROOT_DIR=D:\logpipe-relay
 ```
 
-3. **Configurer `sources.conf`** :
+Arborescence générée :
 
-Éditez `conf/sources.conf` et ajoutez vos serveurs :
+```
+ROOT_DIR/
+├── inputs/          # Fichiers .log extraits (sortie vers l'ingestor)
+├── data/            # Pipeline interne
+│   ├── incoming/<serveur>/
+│   ├── extracted/<serveur>/
+│   ├── processed/<serveur>/
+│   └── error/copy|extract|quarantine/<serveur>/
+├── state/           # Fichiers d'état (idempotence)
+├── logs/            # logpipe-relay.log
+└── tmp/
+```
+
+Les autres variables dans `env.example` concernent le retry, rsync, l'extraction et le logging.
+
+#### `sources.conf` — serveurs sources
 
 ```json
 {
   "servers": [
     {
-      "name": "srv1",
-      "host": "srv1.example.com",
+      "name": "brs1",
+      "host": "brs1.example.com",
       "user": "loguser",
-      "remote_path": "/var/log/apps/*.gz",
+      "remote_path": "/var/log/abis/*.log.gz",
       "enabled": true
     }
   ]
 }
 ```
 
-4. **Configurer SSH** :
+La collecte liste les fichiers distants via SSH + `find` (un niveau de profondeur, pattern glob dans le nom de fichier).
 
-Assurez-vous que l'utilisateur qui exécute le pipeline a :
-- Accès SSH sans mot de passe aux serveurs sources (clés SSH)
-- Permissions pour lire les fichiers dans `remote_path` sur chaque serveur
+#### `pipeline.conf` — parallélisation et nettoyage
+
+```json
+{
+  "parallel_workers": 2,
+  "cleanup_processed_after_days": 30,
+  "cleanup_error_after_days": 90,
+  "cleanup_inputs_after_days": 0,
+  "cleanup_tmp_after_days": 7,
+  "disk_space_threshold_gb": 10,
+  "disk_space_target_gb": 15,
+  "disk_cleanup_include_inputs": true
+}
+```
+
+| Paramètre | Description |
+|-----------|-------------|
+| `cleanup_processed_after_days` | Rétention des `.gz` archivés dans `data/processed/` et `data/extracted/` |
+| `cleanup_error_after_days` | Rétention des fichiers dans `data/error/` |
+| `cleanup_inputs_after_days` | Rétention dans `inputs/` (`0` = désactivé) |
+| `cleanup_tmp_after_days` | Rétention dans `tmp/` |
+| `disk_space_threshold_gb` | Seuil d'espace libre minimal (Go) — déclenche le cleanup disque |
+| `disk_space_target_gb` | Espace libre visé après cleanup disque (`0` = égal au seuil) |
+| `disk_cleanup_include_inputs` | Autoriser la purge de `inputs/` en dernier recours sous pression disque |
+
+Mettre une rétention à `0` désactive le nettoyage par âge pour cette cible.  
+Mettre `disk_space_threshold_gb` à `0` désactive le nettoyage par disque.
 
 ## Usage
 
-### Exécution complète du pipeline
+### Pipeline complet
 
 ```bash
-# Depuis le répertoire logspipe-relay
 python bin/run
-
-# Options disponibles
-python bin/run --config-dir /path/to/conf  # Spécifier répertoire config
-python bin/run --no-incoming               # Ne pas traiter incoming/
-python bin/run --sequential                # Traitement séquentiel
+python bin/run --config-dir /path/to/conf
+python bin/run --no-incoming      # Ignorer incoming/, collecter uniquement depuis les serveurs
+python bin/run --sequential       # Traiter les serveurs un par un
+python bin/run --no-cleanup       # Sans nettoyage
 ```
 
-### Collecte manuelle d'un fichier
+Flux d'exécution :
+
+1. **Cleanup disque** (si espace libre < seuil) — supprime les fichiers les plus anciens
+2. Collecte (`rsync`) depuis les serveurs configurés
+3. Extraction des `.gz`
+4. Déplacement des `.log` extraits vers `ROOT_DIR/inputs/`
+5. **Cleanup par âge**, puis **cleanup disque** si nécessaire
+
+### Nettoyage seul
+
+```bash
+python bin/cleanup
+python bin/cleanup --config-dir /path/to/conf
+```
+
+### Commandes unitaires
 
 ```bash
 python bin/collect SERVER_NAME /remote/path/to/file.log.gz
-```
-
-### Extraction manuelle
-
-```bash
 python bin/extract /path/to/file.gz [SERVER_NAME]
+python bin/recover [--error-type extract] [--server brs1]
 ```
 
-### Récupération de fichiers en erreur
+## Intégration avec l'ingestor ABIS
 
-```bash
-# Récupérer tous les fichiers en erreur
-python bin/recover
+Pour alimenter directement `middleware-abis-logs-ingestor`, pointez `ROOT_DIR` vers le dossier `storage` de l'ingestor :
 
-# Récupérer seulement les erreurs d'extraction
-python bin/recover --error-type extract
-
-# Récupérer pour un serveur spécifique
-python bin/recover --server srv1
+```env
+ROOT_DIR=/chemin/vers/middleware-abis-logs-ingestor/storage
 ```
 
-## Structure des données
-
-Le pipeline organise les fichiers dans la structure suivante :
-
-```
-DATA_ROOT/
-├── incoming/              # Fichiers collectés (avant extraction)
-│   ├── srv1/
-│   ├── srv2/
-│   └── srv3/
-├── extracted/             # Fichiers extraits
-│   ├── srv1/
-│   ├── srv2/
-│   └── srv3/
-├── processed/             # Fichiers traités (si delete_source=False)
-│   ├── srv1/
-│   ├── srv2/
-│   └── srv3/
-└── error/                 # Fichiers en erreur
-    ├── copy/              # Erreurs de copie
-    │   ├── srv1/
-    │   └── ...
-    ├── extract/           # Erreurs d'extraction
-    │   ├── srv1/
-    │   └── ...
-    └── quarantine/        # Fichiers corrompus
-        ├── srv1/
-        └── ...
-```
+Les fichiers extraits seront déposés dans `storage/inputs/`.  
+L'ingestor lit les `.log` depuis `storage/inputs/processing_data/` en mode batch — adapter l'un ou l'autre côté si besoin.
 
 ## Gestion d'état et idempotence
 
-Le pipeline utilise un système d'état pour garantir l'idempotence :
+- Un fichier JSON par fichier traité dans `ROOT_DIR/state/` (clé = hash `serveur:filename`)
+- Statuts : `pending` → `copied` → `extracted` → `processed` (ou `error`)
+- Checksums SHA256 pour détecter les copies déjà valides
+- Lors d'un cleanup, l'état associé est supprimé pour permettre une re-collecte
 
-- Chaque fichier a un fichier d'état dans `STATE_DIR/`
-- Les checksums SHA256 sont calculés et stockés
-- Le statut de chaque fichier est suivi (pending, copied, extracted, processed, error)
-- Les compteurs de retry sont maintenus par fichier
+## Nettoyage
 
-Cela permet de relancer le pipeline sans créer de doublons.
+### Par âge
+
+Supprime les fichiers dont la date de modification dépasse la rétention configurée dans `pipeline.conf`.
+
+### Par espace disque
+
+Si l'espace libre sur `ROOT_DIR` descend sous `disk_space_threshold_gb`, les fichiers les plus anciens sont supprimés par ordre de priorité :
+
+1. `tmp/`
+2. `data/processed/`
+3. `data/extracted/`
+4. `data/error/copy`, `extract`, `quarantine`
+5. `inputs/` (si `disk_cleanup_include_inputs` est `true`)
+
+Le cleanup s'arrête lorsque l'espace libre atteint `disk_space_target_gb`.
 
 ## Logging
 
-Les logs sont écrits dans `LOG_DIR/logpipe-relay.log` avec rotation automatique.
-
-Format JSON par défaut (configurable via `LOG_FORMAT` dans `.env`) :
+Fichier : `ROOT_DIR/logs/logpipe-relay.log` (rotation configurable via `.env`).
 
 ```json
 {
@@ -203,96 +223,39 @@ Format JSON par défaut (configurable via `LOG_FORMAT` dans `.env`) :
   "level": "INFO",
   "logger": "logpipe_relay",
   "message": "File collected successfully",
-  "server": "srv1",
-  "file": "app.log.gz",
+  "server": "brs1",
+  "file": "auditlog-2025-11-10_07.0.log.gz",
   "operation": "copy"
 }
 ```
 
-## Retry et backoff
+## Authentification SSH
 
-Le pipeline implémente un mécanisme de retry avec backoff exponentiel :
+**Recommandé** : clés SSH sans mot de passe.
 
-- **Backoff exponentiel** : Délai augmente exponentiellement entre les tentatives
-- **Jitter** : Ajout d'aléatoire pour éviter le thundering herd
-- **Configurable** : Nombre de retries, délai de base, délai max via `.env`
-
-## Utilisation d'un mot de passe SSH
-
-L'authentification recommandée est par **clés SSH** (sans mot de passe).  
-Cependant, si vous devez absolument utiliser un **mot de passe SSH**, le collecteur supporte `sshpass` via la variable d'environnement `SSH_PASSWORD`.
-
-### Prérequis
-
-- Installer `sshpass` :
-  - Debian/Ubuntu : `sudo apt-get install sshpass`
-  - CentOS/RHEL : `sudo yum install sshpass`
-  - Windows : utiliser WSL avec `sshpass`, ou privilégier les clés SSH
-
-### Configuration
-
-1. Exporter le mot de passe dans l'environnement avant d'exécuter le pipeline :
+En alternative (non recommandé en production), le mot de passe peut être passé via la variable d'environnement `SSH_PASSWORD` (nécessite `sshpass`) :
 
 ```bash
 export SSH_PASSWORD='monMotDePasseSsh'
 python bin/run
 ```
 
-2. Le code construira alors automatiquement une commande de ce type :
+Ne jamais commiter de mot de passe dans `.env` ou dans le dépôt.
 
-```bash
-sshpass -p "$SSH_PASSWORD" rsync ...
-```
+## Limitations connues
 
-⚠️ **Attention sécurité** :
-
-- Ne commitez jamais votre mot de passe dans un fichier (`.env`, script, etc.).
-- Préférez l'utilisation de clés SSH pour la production.
-- Restreignez les droits de l'utilisateur qui exécute le pipeline.
-
-## Limitations et améliorations futures
-
-### Limitations actuelles
-
-1. **Liste des fichiers distants** : La méthode `collect_all_from_server()` n'est pas complètement implémentée. Il faudrait :
-   - Se connecter via SSH pour lister les fichiers correspondant au pattern `remote_path`
-   - Utiliser une bibliothèque comme `paramiko` ou `fabric`
-
-2. **Parallélisation** : La collecte depuis plusieurs serveurs peut être améliorée pour traiter plusieurs fichiers en parallèle par serveur
-
-### Améliorations suggérées
-
-- Support de formats de compression supplémentaires (bz2, xz)
-- Intégration avec des systèmes de monitoring (Prometheus)
-- Support de la compression des fichiers extraits
-- Mécanisme de nettoyage automatique des fichiers anciens
-- Support de la collecte incrémentale (uniquement nouveaux fichiers)
-- Webhook/notifications en cas d'erreurs critiques
+- `find -maxdepth 1` : seuls les fichiers directement dans le répertoire du `remote_path` sont listés
+- Pas de collecte parallèle de plusieurs fichiers sur un même serveur (parallélisation inter-serveurs uniquement)
+- Form requirement `rsync` + `ssh` (sur Windows, utiliser WSL ou un port rsync)
 
 ## Développement
 
-### Structure des tests
-
 ```bash
-# Installer les dépendances de développement
-pip install -r requirements.txt[dev]
-
-# Exécuter les tests
-pytest tests/
-```
-
-### Formatage du code
-
-```bash
+pip install -e ".[dev]"
 black src/
 flake8 src/
-mypy src/
 ```
 
 ## Licence
 
-MIT License (ou selon votre préférence)
-
-## Auteur
-
-Votre nom / Organisation
+MIT License
