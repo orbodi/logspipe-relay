@@ -1,29 +1,25 @@
 # Configuration des serveurs sources
-# Format: YAML ou JSON (actuellement JSON)
-# Chaque serveur doit avoir: name, host, user, remote_path
+# Chaque serveur : name, host, user, remote_path, enabled
+# Authentification user/password :
+#   - "password" dans ce fichier (sources.conf est gitignoré), ou
+#   - SSH_PASSWORD / SSH_PASSWORD_<NAME> dans conf/.env
 
 {
   "servers": [
     {
-      "name": "srv1",
-      "host": "srv1.example.com",
+      "name": "brs1",
+      "host": "192.168.1.10",
       "user": "loguser",
-      "remote_path": "/var/log/apps/*.gz",
+      "password": "votreMotDePasse",
+      "remote_path": "/var/log/abis/*.log.gz",
       "enabled": true
     },
     {
-      "name": "srv2",
-      "host": "srv2.example.com",
+      "name": "brs2",
+      "host": "192.168.1.11",
       "user": "loguser",
-      "remote_path": "/var/log/apps/*.gz",
+      "remote_path": "/var/log/abis/*.log.gz",
       "enabled": true
-    },
-    {
-      "name": "srv3",
-      "host": "srv3.example.com",
-      "user": "loguser",
-      "remote_path": "/var/log/apps/*.gz",
-      "enabled": false
     }
   ]
 }

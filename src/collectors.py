@@ -48,19 +48,50 @@ class Collector:
         """
         return shutil.which("rsync") is not None
 
-    def _build_ssh_base_cmd(self) -> List[str]:
+    def _resolve_ssh_password(self, server: ServerConfig) -> Optional[str]:
         """
-        Construit la base de commande SSH, en tenant compte éventuellement
-        d'un mot de passe fourni via SSH_PASSWORD (sshpass).
+        Mot de passe SSH pour un serveur.
 
-        Returns:
-            Liste de base pour exécuter ssh/sshpass.
+        Priorité :
+        1. champ password dans sources.conf
+        2. variable SSH_PASSWORD_<NOM_SERVEUR> (ex. SSH_PASSWORD_BRS1)
+        3. variable globale SSH_PASSWORD dans .env
         """
-        ssh_password = os.getenv("SSH_PASSWORD")
-        base_cmd: List[str] = []
-        if ssh_password:
-            base_cmd = ["sshpass", "-p", ssh_password]
-        return base_cmd + ["ssh"]
+        if server.password:
+            return server.password
+
+        env_key = f"SSH_PASSWORD_{server.name.upper().replace('-', '_')}"
+        per_server = os.getenv(env_key, "").strip()
+        if per_server:
+            return per_server
+
+        global_pwd = os.getenv("SSH_PASSWORD", "").strip()
+        return global_pwd or None
+
+    def _wrap_with_sshpass(self, password: str, cmd: List[str]) -> List[str]:
+        """Préfixe une commande avec sshpass -e (mot de passe via SSHPASS)."""
+        if not password:
+            return cmd
+        if not shutil.which("sshpass"):
+            raise CopyError(
+                "sshpass is required for password authentication but was not found. "
+                "Install sshpass or use SSH key authentication."
+            )
+        return ["sshpass", "-e"] + cmd
+
+    def _subprocess_env(self, server: ServerConfig) -> dict:
+        """Environnement subprocess avec SSHPASS si authentification par mot de passe."""
+        env = os.environ.copy()
+        password = self._resolve_ssh_password(server)
+        if password:
+            env["SSHPASS"] = password
+        return env
+
+    def _build_ssh_base_cmd(self, server: ServerConfig) -> List[str]:
+        """Construit la commande SSH (avec sshpass si mot de passe configuré)."""
+        password = self._resolve_ssh_password(server)
+        cmd = ["ssh"]
+        return self._wrap_with_sshpass(password, cmd) if password else cmd
     
     def _build_rsync_command(
         self,
@@ -68,41 +99,29 @@ class Collector:
         remote_path: str,
         local_dest: Path,
     ) -> List[str]:
-        """
-        Construit la commande rsync.
-        
-        Args:
-            server: Configuration du serveur.
-            remote_path: Chemin distant du fichier.
-            local_dest: Destination locale.
-        
-        Returns:
-            Liste des arguments de la commande rsync.
-        """
-        # Construire le chemin distant avec user@host
         remote = f"{server.user}@{server.host}:{remote_path}"
-        
-        # Options rsync
         options = self.config.rsync.options.split()
+        password = self._resolve_ssh_password(server)
 
-        # Support d'un mot de passe SSH via la variable d'environnement SSH_PASSWORD.
-        # Attention: ceci nécessite l'outil `sshpass` et n'est pas recommandé en production,
-        # préférez l'authentification par clés SSH quand c'est possible.
-        ssh_password = os.getenv("SSH_PASSWORD")
-
-        base_cmd: List[str] = []
-        if ssh_password:
-            # Préfixer la commande rsync avec sshpass
-            base_cmd = ["sshpass", "-p", ssh_password]
-
-        # Construire la commande complète
-        cmd = base_cmd + ["rsync"] + options + [
+        rsync_cmd = ["rsync"] + options + [
             "--timeout", str(self.config.rsync.timeout),
             remote,
             str(local_dest),
         ]
-        
-        return cmd
+
+        if password:
+            if not shutil.which("sshpass"):
+                raise CopyError(
+                    "sshpass is required for password authentication but was not found."
+                )
+            rsync_cmd = ["rsync"] + options + [
+                "-e", "sshpass -e ssh",
+                "--timeout", str(self.config.rsync.timeout),
+                remote,
+                str(local_dest),
+            ]
+
+        return rsync_cmd
     
     def _copy_file(
         self,
@@ -144,7 +163,8 @@ class Collector:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=self.config.rsync.timeout + 10,  # Petit buffer pour le timeout
+                timeout=self.config.rsync.timeout + 10,
+                env=self._subprocess_env(server),
             )
             
             if result.returncode != 0:
@@ -317,7 +337,7 @@ class Collector:
             f"find {shlex.quote(base_dir)} -maxdepth 1 -type f -name {shlex.quote(pattern)}"
         )
 
-        ssh_cmd = self._build_ssh_base_cmd() + [
+        ssh_cmd = self._build_ssh_base_cmd(server) + [
             f"{server.user}@{server.host}",
             remote_find_cmd,
         ]
@@ -333,6 +353,7 @@ class Collector:
                 capture_output=True,
                 text=True,
                 timeout=self.config.rsync.timeout + 10,
+                env=self._subprocess_env(server),
             )
 
             if result.returncode != 0:

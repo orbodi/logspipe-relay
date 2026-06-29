@@ -74,6 +74,7 @@ class ServerConfig:
     user: str
     remote_path: str
     enabled: bool = True
+    password: Optional[str] = None
 
 
 @dataclass
@@ -255,6 +256,7 @@ def load_config(config_dir: Optional[Path] = None) -> Config:
                 user=server_data["user"],
                 remote_path=server_data["remote_path"],
                 enabled=server_data.get("enabled", True),
+                password=server_data.get("password") or None,
             ))
     
     config = Config(

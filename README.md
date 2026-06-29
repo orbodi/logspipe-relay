@@ -96,15 +96,16 @@ ROOT_DIR/
 
 Les autres variables dans `env.example` concernent le retry, rsync, l'extraction et le logging.
 
-#### `sources.conf` — serveurs sources
+#### `sources.conf` — serveurs sources (user + mot de passe)
 
 ```json
 {
   "servers": [
     {
       "name": "brs1",
-      "host": "brs1.example.com",
+      "host": "192.168.1.10",
       "user": "loguser",
+      "password": "votreMotDePasse",
       "remote_path": "/var/log/abis/*.log.gz",
       "enabled": true
     }
@@ -112,7 +113,22 @@ Les autres variables dans `env.example` concernent le retry, rsync, l'extraction
 }
 ```
 
-La collecte liste les fichiers distants via SSH + `find` (un niveau de profondeur, pattern glob dans le nom de fichier).
+> `conf/sources.conf` est dans `.gitignore` — ne commitez pas les mots de passe.
+
+**Alternatives au champ `password` dans `sources.conf` :**
+
+```env
+# Même mot de passe pour tous les serveurs
+SSH_PASSWORD=monMotDePasse
+
+# Ou un mot de passe par serveur (nom en majuscules)
+SSH_PASSWORD_BRS1=motDePasse1
+SSH_PASSWORD_BRS2=motDePasse2
+```
+
+Priorité : `password` dans `sources.conf` → `SSH_PASSWORD_<NAME>` → `SSH_PASSWORD`.
+
+**Prérequis user/password :** installer `sshpass` sur la machine qui exécute le pipeline (Linux/WSL). Sur Windows natif, utiliser WSL ou Git Bash avec `sshpass`.
 
 #### `pipeline.conf` — parallélisation et nettoyage
 
@@ -231,16 +247,19 @@ Fichier : `ROOT_DIR/logs/logpipe-relay.log` (rotation configurable via `.env`).
 
 ## Authentification SSH
 
-**Recommandé** : clés SSH sans mot de passe.
+### User / mot de passe (votre cas)
 
-En alternative (non recommandé en production), le mot de passe peut être passé via la variable d'environnement `SSH_PASSWORD` (nécessite `sshpass`) :
+1. **`user`** + **`password`** dans `conf/sources.conf` (fichier local, gitignoré)
+2. Ou mot de passe dans `conf/.env` via `SSH_PASSWORD` ou `SSH_PASSWORD_BRS1`
+3. Installer **`sshpass`** : `sudo apt install sshpass` (Linux/WSL)
 
 ```bash
-export SSH_PASSWORD='monMotDePasseSsh'
 python bin/run
 ```
 
-Ne jamais commiter de mot de passe dans `.env` ou dans le dépôt.
+### Clés SSH (recommandé en production)
+
+Configurer `ssh-copy-id user@host` — dans ce cas, ne pas renseigner de mot de passe.
 
 ## Limitations connues
 
